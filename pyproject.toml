@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gp-split-saml"
+version = "0.1.0"
+description = "GlobalProtect VPN client with SAML auth and split tunneling"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [{ name = "dlewis7444" }]
+dependencies = [
+    "requests>=2.28",
+    "urllib3>=2.0",
+    "PyGObject>=3.42",
+    "SecretStorage>=3.3",
+]
+
+[project.scripts]
+gp-split-saml = "gp_split_saml.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+gp_split_saml = ["data/**/*"]

@@ -1,0 +1,19 @@
+[Desktop Entry]
+Type=Application
+Name=GP Split SAML
+Comment=GlobalProtect VPN with SAML auth and split tunneling
+Exec=gp-split-saml
+Icon=gp-split-saml
+Categories=Network;VPN;
+Keywords=vpn;globalprotect;saml;split;tunnel;
+Terminal=false
+StartupNotify=true
+Actions=Connect;Disconnect;
+
+[Desktop Action Connect]
+Name=Connect VPN
+Exec=gp-split-saml --connect
+
+[Desktop Action Disconnect]
+Name=Disconnect VPN
+Exec=gp-split-saml --disconnect

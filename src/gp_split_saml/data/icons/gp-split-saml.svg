@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <!-- Background circle -->
+  <circle cx="24" cy="24" r="22" fill="#1A1A2E" stroke="#00D4AA" stroke-width="2"/>
+  <!-- Split tunnel icon: two arrows diverging -->
+  <path d="M24 10 L24 24" stroke="#00D4AA" stroke-width="3" stroke-linecap="round"/>
+  <path d="M24 24 L14 36" stroke="#FF6B35" stroke-width="3" stroke-linecap="round"/>
+  <path d="M24 24 L34 36" stroke="#E91E8C" stroke-width="3" stroke-linecap="round"/>
+  <!-- Arrow tips -->
+  <polygon points="14,36 17,32 11,32" fill="#FF6B35"/>
+  <polygon points="34,36 37,32 31,32" fill="#E91E8C"/>
+  <!-- Lock on top -->
+  <rect x="20" y="6" width="8" height="6" rx="1" fill="#00D4AA"/>
+  <path d="M22 6 L22 3 Q24 1 26 3 L26 6" fill="none" stroke="#00D4AA" stroke-width="1.5"/>
+</svg>
