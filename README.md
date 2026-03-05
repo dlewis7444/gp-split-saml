@@ -78,10 +78,6 @@ The window minimizes to the system tray when closed while connected. Use the tra
 6. **Health Monitor** — Checks every 10 seconds that `openconnect` is still running
 7. **Clean Disconnect** — Kills `openconnect`, removes routes, reverts DNS to original state
 
-## Tux Mascot
-
-The Tux penguin image is based on the original by Larry Ewing (lewing@isc.tamu.edu), created using GIMP. The image is freely distributable with attribution.
-
 ## License
 
 MIT — see [LICENSE](LICENSE).
