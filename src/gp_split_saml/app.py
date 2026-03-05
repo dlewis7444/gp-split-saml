@@ -14,7 +14,7 @@ from gp_split_saml.config import load_config, VPNConfig
 from gp_split_saml.log import UIHandler, setup_logging
 from gp_split_saml.saml import perform_saml_auth
 from gp_split_saml.vpn import VPNConnection
-from gp_split_saml.network import NetworkState, NetworkManager
+from gp_split_saml.network import NetworkState, NetworkManager, get_tunnel_ip
 from gp_split_saml.window import MainWindow
 from gp_split_saml.tray import TrayIcon
 from gp_split_saml.notify import notify_connected, notify_disconnected, notify_error
@@ -41,6 +41,7 @@ class GPSplitSAMLApp(Gtk.Application):
         self._health_timer: int | None = None
         self._uptime_timer: int | None = None
         self._connect_time: float | None = None
+        self._disconnecting = False
         self._ui_handler = UIHandler()
         self._logger = setup_logging(self._ui_handler)
 
@@ -62,7 +63,10 @@ class GPSplitSAMLApp(Gtk.Application):
             dialog.destroy()
             return
 
-        self._window = MainWindow(self, self._do_connect, self._do_disconnect)
+        self._window = MainWindow(
+            self, self._do_connect, self._do_disconnect,
+            self._do_quit, self._on_config_change, self._config,
+        )
         self._window.connect("delete-event", self._on_window_close)
         self._ui_handler.set_callback(self._log_to_ui)
         self._window.show_all()
@@ -85,11 +89,8 @@ class GPSplitSAMLApp(Gtk.Application):
         GLib.idle_add(self._window.append_log, msg)
 
     def _on_window_close(self, window, event):
-        if self._vpn.is_running:
-            window.hide()
-            return True  # Stay in tray
-        self._do_quit()
-        return True
+        window.hide()
+        return True  # Always minimize to tray
 
     def _show_window(self):
         if self._window:
@@ -171,21 +172,23 @@ class GPSplitSAMLApp(Gtk.Application):
             )
 
             self._connect_time = time.time()
+            tunnel_ip = get_tunnel_ip()
 
             # Update UI on main thread
-            GLib.idle_add(self._on_connected)
+            GLib.idle_add(self._on_connected, tunnel_ip)
 
         except Exception as e:
             log.error("Connection failed: %s", e)
             GLib.idle_add(self._on_connect_error, str(e))
 
-    def _on_connected(self):
+    def _on_connected(self, tunnel_ip: str = ""):
         """Called on main thread after successful connection."""
         log.info("VPN connected successfully")
         self._window.set_state(
             "connected",
             gateway=self._config.gateway,
             route=self._config.vpn_internal_route,
+            tunnel_ip=tunnel_ip,
         )
         self._tray.set_state("connected")
         notify_connected(self._config.gateway)
@@ -205,18 +208,22 @@ class GPSplitSAMLApp(Gtk.Application):
 
     def _do_disconnect(self):
         """Disconnect VPN and restore network state."""
+        if self._disconnecting:
+            return
         if not self._vpn.is_running and self._vpn.pid is None:
             return
 
-        self._window.set_state("connecting")  # Show transitional state
+        self._disconnecting = True
 
-        # Stop timers
+        # Stop timers first to prevent health check re-entry
         if self._health_timer:
             GLib.source_remove(self._health_timer)
             self._health_timer = None
         if self._uptime_timer:
             GLib.source_remove(self._uptime_timer)
             self._uptime_timer = None
+
+        self._window.set_state("connecting")  # Show transitional state
 
         thread = threading.Thread(target=self._disconnect_background, daemon=True)
         thread.start()
@@ -235,6 +242,7 @@ class GPSplitSAMLApp(Gtk.Application):
 
     def _on_disconnected(self):
         log.info("VPN disconnected, network restored")
+        self._disconnecting = False
         self._window.set_state("disconnected")
         self._tray.set_state("disconnected")
         self._connect_time = None
@@ -257,6 +265,14 @@ class GPSplitSAMLApp(Gtk.Application):
         minutes, seconds = divmod(rem, 60)
         self._window.update_uptime(f"{hours:02d}:{minutes:02d}:{seconds:02d}")
         return True
+
+    def _on_config_change(self, config):
+        """Accept session-only config edits from the UI."""
+        self._config = config
+        log.info(
+            "Session config updated — gateway: %s  route: %s  dns: %s",
+            config.gateway, config.vpn_internal_route, config.vpn_dns,
+        )
 
     def _do_quit(self):
         if self._vpn.is_running:

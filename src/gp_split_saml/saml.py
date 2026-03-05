@@ -162,7 +162,7 @@ class SAMLLoginWindow:
 
         self.window = Gtk.Window()
         self.window.set_title("SAML Login")
-        self.window.set_default_size(500, 600)
+        self.window.set_default_size(500, 660)
         self.window.add(self.wview)
         self.window.show_all()
 
@@ -185,6 +185,8 @@ class SAMLLoginWindow:
         self._loop.quit()
 
     def _on_load_changed(self, webview, event):
+        if self.success:
+            return
         if event != WebKit2.LoadEvent.FINISHED:
             return
 
@@ -245,6 +247,8 @@ class SAMLLoginWindow:
             GLib.timeout_add(1000, self._check_done)
 
     def _check_done(self) -> bool:
+        if self.success:
+            return True
         d = self.saml_result
         if "saml-username" in d and (
             "prelogin-cookie" in d or "portal-userauthcookie" in d

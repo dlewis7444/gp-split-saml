@@ -2,7 +2,32 @@
 
 /* Main window */
 .main-window {
-    background: linear-gradient(180deg, #1A1A2E 0%, #16213E 50%, #0F3460 100%);
+    background-color: #16213E;
+}
+
+/* Kill GTK headerbar default background */
+headerbar {
+    background-color: #16213E;
+    background-image: none;
+    border-bottom: none;
+    box-shadow: none;
+}
+
+headerbar label.title {
+    color: #00D4AA;
+}
+
+headerbar button {
+    background-color: transparent;
+    background-image: none;
+    color: #B0BEC5;
+    border: none;
+    box-shadow: none;
+}
+
+headerbar button:hover {
+    background-color: rgba(0, 212, 170, 0.15);
+    color: #ECEFF1;
 }
 
 /* Header area */
@@ -14,7 +39,6 @@
     color: #00D4AA;
     font-size: 22px;
     font-weight: 800;
-    letter-spacing: 1px;
 }
 
 .header-motto {
@@ -22,6 +46,124 @@
     font-size: 13px;
     font-weight: 600;
     font-style: italic;
+}
+
+/* Config info labels */
+.config-info {
+    color: #78909C;
+    font-size: 13px;
+}
+
+/* Config edit link button */
+.config-edit-link {
+    background-color: transparent;
+    background-image: none;
+    color: #90A4AE;
+    border: none;
+    box-shadow: none;
+    outline: none;
+    padding: 0;
+    font-size: 11px;
+    min-height: 0;
+}
+
+.config-edit-link label {
+    color: #90A4AE;
+    font-size: 11px;
+}
+
+.config-edit-link:hover label,
+.config-edit-link:focus label {
+    color: #00D4AA;
+}
+
+.config-edit-link:focus {
+    outline: none;
+    box-shadow: none;
+    background-color: transparent;
+    background-image: none;
+}
+
+/* Config edit form */
+.config-edit-label {
+    color: #78909C;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.config-entry {
+    background-color: rgba(15, 15, 30, 0.8);
+    color: #ECEFF1;
+    border: 1px solid #00D4AA;
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 12px;
+    min-height: 0;
+}
+
+.config-note {
+    color: #FFB300;
+    font-size: 11px;
+    font-style: italic;
+}
+
+.config-apply-btn {
+    background-color: #00695C;
+    background-image: none;
+    color: #ECEFF1;
+    border: none;
+    border-radius: 8px;
+    box-shadow: none;
+    padding: 4px 16px;
+    font-size: 12px;
+    font-weight: 600;
+    min-height: 0;
+}
+
+.config-apply-btn label {
+    color: #ECEFF1;
+    font-size: 12px;
+}
+
+.config-apply-btn:hover {
+    background-color: #00897B;
+    background-image: none;
+}
+
+.config-cancel-btn {
+    background-color: transparent;
+    background-image: none;
+    color: #B0BEC5;
+    border: 1px solid #78909C;
+    border-radius: 8px;
+    box-shadow: none;
+    outline: none;
+    padding: 4px 16px;
+    font-size: 12px;
+    font-weight: 600;
+    min-height: 0;
+}
+
+.config-cancel-btn label {
+    color: #B0BEC5;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.config-cancel-btn:hover {
+    background-color: rgba(84, 110, 122, 0.2);
+    background-image: none;
+}
+
+.config-cancel-btn:focus {
+    outline: none;
+    box-shadow: none;
+    background-color: transparent;
+    background-image: none;
+}
+
+.config-cancel-btn:focus label {
+    color: #B0BEC5;
 }
 
 /* Status card */
@@ -37,8 +179,6 @@
     color: #B0BEC5;
     font-size: 12px;
     font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
 }
 
 .status-value {
@@ -67,46 +207,99 @@
     font-weight: 700;
 }
 
-/* Connect button */
+/* Connect button — force override GTK defaults */
 .connect-button {
-    background: linear-gradient(135deg, #FF6B35 0%, #E91E8C 100%);
-    color: white;
+    background-color: #FF6B35;
+    background-image: none;
+    color: #FFFFFF;
     border: none;
     border-radius: 28px;
+    box-shadow: none;
     padding: 14px 40px;
-    font-size: 16px;
-    font-weight: 700;
-    letter-spacing: 1px;
-    text-transform: uppercase;
+    font-size: 18px;
+    font-weight: 800;
     margin: 12px 40px;
     min-height: 48px;
 }
 
+.connect-button label {
+    color: #FFFFFF;
+    font-size: 20px;
+    font-weight: 800;
+}
+
 .connect-button:hover {
-    background: linear-gradient(135deg, #FF8A50 0%, #F048A8 100%);
+    background-color: #FF8A50;
+    background-image: none;
 }
 
 .connect-button:active {
-    background: linear-gradient(135deg, #E65100 0%, #C2185B 100%);
+    background-color: #E65100;
+    background-image: none;
 }
 
 /* Disconnect button */
 .disconnect-button {
-    background: linear-gradient(135deg, #455A64 0%, #37474F 100%);
+    background-color: #37474F;
+    background-image: none;
     color: #FF1744;
     border: 2px solid #FF1744;
     border-radius: 28px;
+    box-shadow: none;
     padding: 14px 40px;
-    font-size: 16px;
-    font-weight: 700;
-    letter-spacing: 1px;
-    text-transform: uppercase;
+    font-size: 18px;
+    font-weight: 800;
     margin: 12px 40px;
     min-height: 48px;
 }
 
+.disconnect-button label {
+    color: #FF1744;
+    font-size: 18px;
+    font-weight: 800;
+}
+
 .disconnect-button:hover {
-    background: linear-gradient(135deg, #546E7A 0%, #455A64 100%);
+    background-color: #455A64;
+    background-image: none;
+}
+
+/* Exit button */
+.exit-button {
+    background-color: #2E1A47;
+    background-image: none;
+    color: #E1BEE7;
+    border: 1px solid #9C6FFF;
+    border-radius: 16px;
+    box-shadow: none;
+    outline: none;
+    padding: 4px 16px;
+    font-size: 14px;
+    font-weight: 700;
+    margin: 4px 120px;
+    min-height: 28px;
+}
+
+.exit-button label {
+    color: #E1BEE7;
+    font-size: 14px;
+    font-weight: 700;
+}
+
+.exit-button:hover {
+    background-color: #3D2460;
+    background-image: none;
+}
+
+.exit-button:focus {
+    outline: none;
+    box-shadow: none;
+    background-color: #2E1A47;
+    background-image: none;
+}
+
+.exit-button:focus label {
+    color: #E1BEE7;
 }
 
 /* Log view */

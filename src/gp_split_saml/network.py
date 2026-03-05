@@ -97,19 +97,17 @@ class NetworkManager:
         gw = self.state.default_gateway
         dev = self.state.default_device
 
-        # Delete all default routes
+        # Remove only VPN-added default routes (openconnect adds defaults via tun0).
+        # Leave NM's DHCP default route untouched so it survives disconnect.
         result = _run(["ip", "route"])
         for line in result.stdout.splitlines():
-            if line.startswith("default"):
+            if line.startswith("default") and TUN_DEVICE in line:
                 _sudo(["ip", "route", "del"] + line.split())
-
-        # Restore home default route
-        _sudo(["ip", "route", "add", "default", "via", gw, "dev", dev], check=False)
 
         # Add VPN internal route
         _sudo(["ip", "route", "add", vpn_route, "dev", TUN_DEVICE], check=False)
 
-        log.info("Routes configured: default via %s, %s via %s", gw, vpn_route, TUN_DEVICE)
+        log.info("Routes configured: default via %s (NM), %s via %s", gw, vpn_route, TUN_DEVICE)
 
     def setup_dns(
         self,
@@ -144,16 +142,11 @@ class NetworkManager:
         # Remove VPN route
         _sudo(["ip", "route", "del", vpn_route, "dev", TUN_DEVICE])
 
-        # Remove proto-less routes via default gateway
-        result = _run(["ip", "route", "show", "via", gw])
-        for line in result.stdout.splitlines():
-            if "proto " not in line:
-                _sudo(["ip", "route", "del"] + line.split())
-
-        # Fallback default route if NM hasn't restored
-        result = _run(["ip", "route", "show", "default"])
+        # Safety net: if NM's default route is somehow gone, restore it.
+        result = _run(["ip", "route", "show", "default", "dev", dev])
         if not result.stdout.strip():
-            _sudo(["ip", "route", "add", "default", "via", gw, "dev", dev])
+            log.warning("Default route via %s missing after cleanup, restoring", dev)
+            _sudo(["ip", "route", "add", "default", "via", gw, "dev", dev], check=False)
 
         # Revert tun0 DNS
         _sudo(["resolvectl", "revert", TUN_DEVICE])
@@ -165,4 +158,14 @@ class NetworkManager:
         if self.state.orig_domain:
             _sudo(["resolvectl", "domain", iface] + self.state.orig_domain.split())
 
+        result = _run(["ip", "route", "show", "default"])
+        log.info("Default route after cleanup: %s", result.stdout.strip() or "(none)")
+
         log.info("Network state restored")
+
+
+def get_tunnel_ip(device: str = TUN_DEVICE) -> str:
+    """Return the first IPv4 address assigned to the tunnel interface."""
+    result = _run(["ip", "-4", "addr", "show", device])
+    match = re.search(r"inet (\d+\.\d+\.\d+\.\d+)", result.stdout)
+    return match.group(1) if match else ""

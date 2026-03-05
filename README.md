@@ -22,7 +22,7 @@ sudo dnf install python3-gobject gtk3 webkit2gtk4.1 libappindicator-gtk3 \
 
 ```bash
 # Clone and install
-cd ~/dev/VPN/gp-split-saml
+cd gp-split-saml
 pip install -e .
 
 # Desktop integration (optional)
