@@ -350,6 +350,12 @@ headerbar button:hover {
     border-radius: 8px;
 }
 
+/* Version label */
+.version-label {
+    color: #546E7A;
+    font-size: 11px;
+}
+
 /* Uptime label */
 .uptime-label {
     color: #00D4AA;

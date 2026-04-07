@@ -8,6 +8,7 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, Gdk, GdkPixbuf, GLib, Pango
 
+from gp_split_saml import __version__
 from gp_split_saml.config import VPNConfig
 
 log = logging.getLogger("gp_split_saml")
@@ -210,6 +211,15 @@ class MainWindow(Gtk.ApplicationWindow):
         exit_btn.connect("clicked", lambda _: self._on_quit())
         _set_pointer_cursor(exit_btn)
         vbox.pack_start(exit_btn, False, False, 0)
+
+        # --- Version Label (bottom-right; pack_end before log expander puts it lowest) ---
+        version_label = Gtk.Label(label=f"v{__version__}")
+        version_label.get_style_context().add_class("version-label")
+        version_label.set_halign(Gtk.Align.END)
+        version_label.set_margin_end(16)
+        version_label.set_margin_top(2)
+        version_label.set_margin_bottom(4)
+        vbox.pack_end(version_label, False, False, 0)
 
         # --- Log Expander ---
         self._log_expander = Gtk.Expander(label="Logs")

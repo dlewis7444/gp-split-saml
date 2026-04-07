@@ -1,9 +1,12 @@
 """GPSplitSAMLApp — GtkApplication orchestrator."""
 
+import json
 import logging
 import signal
+import subprocess
 import threading
 import time
+from pathlib import Path
 
 import gi
 
@@ -14,7 +17,7 @@ from gp_split_saml.config import load_config, VPNConfig
 from gp_split_saml.log import UIHandler, setup_logging
 from gp_split_saml.saml import perform_saml_auth
 from gp_split_saml.vpn import VPNConnection
-from gp_split_saml.network import NetworkState, NetworkManager, get_tunnel_ip
+from gp_split_saml.network import NetworkState, NetworkManager, get_tunnel_ip, cleanup_stale_routes
 from gp_split_saml.window import MainWindow
 from gp_split_saml.tray import TrayIcon
 from gp_split_saml.notify import notify_connected, notify_disconnected, notify_error
@@ -22,6 +25,8 @@ from gp_split_saml.cookies import store_cookie, load_cookie
 from gp_split_saml.theme import load_css
 
 log = logging.getLogger("gp_split_saml")
+
+_STATE_FILE = Path.home() / ".local" / "share" / "gp-split-saml" / "vpn-state.json"
 
 
 class GPSplitSAMLApp(Gtk.Application):
@@ -63,6 +68,8 @@ class GPSplitSAMLApp(Gtk.Application):
             dialog.destroy()
             return
 
+        self._recover_stale_vpn()
+
         self._window = MainWindow(
             self, self._do_connect, self._do_disconnect,
             self._do_quit, self._on_config_change, self._config,
@@ -97,11 +104,96 @@ class GPSplitSAMLApp(Gtk.Application):
             self._window.show_all()
             self._window.present()
 
+    # ------------------------------------------------------------------ #
+    # State file — persists session across crashes for recovery on restart #
+    # ------------------------------------------------------------------ #
+
+    def _write_state(self) -> None:
+        """Write VPN session state to disk for crash recovery."""
+        if not self._net_state:
+            return
+        _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _STATE_FILE.write_text(json.dumps({
+            "default_gateway": self._net_state.default_gateway,
+            "default_device": self._net_state.default_device,
+        }))
+        log.debug("VPN state written to %s", _STATE_FILE)
+
+    def _clear_state(self) -> None:
+        try:
+            _STATE_FILE.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def _recover_stale_vpn(self) -> None:
+        """On startup, clean up any VPN session left over from a previous crash."""
+        if not _STATE_FILE.exists():
+            return
+
+        try:
+            state = json.loads(_STATE_FILE.read_text())
+        except (json.JSONDecodeError, OSError) as e:
+            log.warning("Could not read stale VPN state: %s", e)
+            self._clear_state()
+            return
+
+        gateway = state.get("default_gateway", "")
+        device = state.get("default_device", "")
+
+        log.info("Stale VPN session detected — cleaning up...")
+
+        # Find and terminate any running openconnect process
+        result = subprocess.run(
+            ["pgrep", "-x", "openconnect"], capture_output=True, text=True
+        )
+        pids = [p.strip() for p in result.stdout.splitlines() if p.strip()]
+
+        if pids:
+            log.info("Sending SIGTERM to openconnect PID(s): %s", ", ".join(pids))
+            for pid in pids:
+                subprocess.run(["sudo", "kill", pid], check=False, timeout=5)
+
+            # Wait up to 15s for openconnect to run its own vpnc-script cleanup
+            for _ in range(15):
+                time.sleep(1)
+                result = subprocess.run(
+                    ["pgrep", "-x", "openconnect"], capture_output=True, text=True
+                )
+                if not result.stdout.strip():
+                    log.info("openconnect exited cleanly")
+                    break
+            else:
+                log.warning("openconnect did not exit after SIGTERM — force-killing")
+                for pid in pids:
+                    subprocess.run(["sudo", "kill", "-9", pid], check=False, timeout=5)
+                time.sleep(1)
+
+        # Clean up any routes openconnect left behind (covers SIGKILL case)
+        if gateway and device:
+            cleanup_stale_routes(gateway, device)
+
+        self._clear_state()
+        log.info("Stale VPN session cleaned up")
+
+    # ------------------------------------------------------------------ #
+    # Signal handling                                                      #
+    # ------------------------------------------------------------------ #
+
     def _on_signal(self):
-        log.info("Signal received, disconnecting...")
-        self._do_disconnect()
+        """SIGINT/SIGTERM — runs on the GLib main loop, so blocking is safe."""
+        log.info("Signal received, cleaning up...")
+        self._stop_timers()
+        if self._vpn.is_running:
+            self._vpn.disconnect()
+            if self._net_mgr and self._config:
+                self._net_mgr.cleanup(self._config.vpn_internal_route)
+        self._clear_state()
         self.quit()
         return False
+
+    # ------------------------------------------------------------------ #
+    # Connect flow                                                         #
+    # ------------------------------------------------------------------ #
 
     def _do_connect(self):
         """Start VPN connection — SAML on main thread, VPN in background."""
@@ -174,6 +266,9 @@ class GPSplitSAMLApp(Gtk.Application):
             self._connect_time = time.time()
             tunnel_ip = get_tunnel_ip()
 
+            # Persist session state for crash recovery
+            self._write_state()
+
             # Update UI on main thread
             GLib.idle_add(self._on_connected, tunnel_ip)
 
@@ -206,6 +301,18 @@ class GPSplitSAMLApp(Gtk.Application):
         if self._vpn.is_running:
             self._vpn.disconnect()
 
+    # ------------------------------------------------------------------ #
+    # Disconnect flow                                                      #
+    # ------------------------------------------------------------------ #
+
+    def _stop_timers(self) -> None:
+        if self._health_timer:
+            GLib.source_remove(self._health_timer)
+            self._health_timer = None
+        if self._uptime_timer:
+            GLib.source_remove(self._uptime_timer)
+            self._uptime_timer = None
+
     def _do_disconnect(self):
         """Disconnect VPN and restore network state."""
         if self._disconnecting:
@@ -214,15 +321,7 @@ class GPSplitSAMLApp(Gtk.Application):
             return
 
         self._disconnecting = True
-
-        # Stop timers first to prevent health check re-entry
-        if self._health_timer:
-            GLib.source_remove(self._health_timer)
-            self._health_timer = None
-        if self._uptime_timer:
-            GLib.source_remove(self._uptime_timer)
-            self._uptime_timer = None
-
+        self._stop_timers()
         self._window.set_state("connecting")  # Show transitional state
 
         thread = threading.Thread(target=self._disconnect_background, daemon=True)
@@ -243,10 +342,15 @@ class GPSplitSAMLApp(Gtk.Application):
     def _on_disconnected(self):
         log.info("VPN disconnected, network restored")
         self._disconnecting = False
+        self._clear_state()
         self._window.set_state("disconnected")
         self._tray.set_state("disconnected")
         self._connect_time = None
         notify_disconnected()
+
+    # ------------------------------------------------------------------ #
+    # Timers / health                                                      #
+    # ------------------------------------------------------------------ #
 
     def _health_check(self) -> bool:
         """Periodic check that openconnect is still running."""
@@ -266,6 +370,10 @@ class GPSplitSAMLApp(Gtk.Application):
         self._window.update_uptime(f"{hours:02d}:{minutes:02d}:{seconds:02d}")
         return True
 
+    # ------------------------------------------------------------------ #
+    # Misc                                                                 #
+    # ------------------------------------------------------------------ #
+
     def _on_config_change(self, config):
         """Accept session-only config edits from the UI."""
         self._config = config
@@ -277,7 +385,7 @@ class GPSplitSAMLApp(Gtk.Application):
     def _do_quit(self):
         if self._vpn.is_running:
             self._do_disconnect()
-            # Give disconnect a moment
+            # Give disconnect thread a moment to finish before GTK exits
             GLib.timeout_add(2000, self.quit)
         else:
             self.quit()

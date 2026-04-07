@@ -39,7 +39,7 @@ def notify_connected(gateway: str):
 
 
 def notify_disconnected():
-    _send("VPN Disconnected", "Split tunnel routes restored", "network-offline")
+    _send("VPN Disconnected", "Network routes restored", "network-offline")
 
 
 def notify_error(message: str):

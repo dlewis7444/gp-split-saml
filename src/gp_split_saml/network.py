@@ -95,7 +95,6 @@ class NetworkManager:
     def setup_routes(self, vpn_route: str) -> None:
         """Configure split tunnel routes after tun0 is up."""
         gw = self.state.default_gateway
-        dev = self.state.default_device
 
         # Remove only VPN-added default routes (openconnect adds defaults via tun0).
         # Leave NM's DHCP default route untouched so it survives disconnect.
@@ -139,8 +138,23 @@ class NetworkManager:
         gw = self.state.default_gateway
         dev = self.state.default_device
 
-        # Remove VPN route
-        _sudo(["ip", "route", "del", vpn_route, "dev", TUN_DEVICE])
+        # Remove the app-added VPN internal route.
+        _sudo(["ip", "route", "del", vpn_route, "dev", TUN_DEVICE], check=False)
+
+        # Remove openconnect split-exclude bypass routes. openconnect's vpnc-script
+        # should handle these on SIGTERM, but we sweep up here in case it didn't
+        # (e.g. SIGKILL, crash, or slow script). This is a no-op when already clean.
+        result = _run(["ip", "route", "show"])
+        for line in result.stdout.splitlines():
+            if (
+                not line.startswith("default")
+                and f"via {gw}" in line
+                and f"dev {dev}" in line
+                and "proto dhcp" not in line
+                and "proto kernel" not in line
+            ):
+                dest = line.split()[0]
+                _sudo(["ip", "route", "del", dest, "via", gw, "dev", dev], check=False)
 
         # Safety net: if NM's default route is somehow gone, restore it.
         result = _run(["ip", "route", "show", "default", "dev", dev])
@@ -162,6 +176,44 @@ class NetworkManager:
         log.info("Default route after cleanup: %s", result.stdout.strip() or "(none)")
 
         log.info("Network state restored")
+
+
+def cleanup_stale_routes(gateway: str, device: str) -> None:
+    """Remove all VPN-added routes after a crash or forced termination.
+
+    Removes:
+    - All routes via tun0 (app-added + openconnect internal routes)
+    - openconnect split-exclude bypass routes (specific-prefix routes via the
+      local gateway with no proto — distinct from NM's 'proto dhcp' routes)
+    """
+    # Remove all tun0 routes
+    result = _run(["ip", "route", "show"])
+    for line in result.stdout.splitlines():
+        if TUN_DEVICE in line:
+            _sudo(["ip", "route", "del"] + line.split(), check=False)
+
+    # Remove openconnect split-exclude bypass routes.
+    # They have no 'proto' token, are not the default route, and point via our gateway.
+    result = _run(["ip", "route", "show"])
+    for line in result.stdout.splitlines():
+        if (
+            not line.startswith("default")
+            and f"via {gateway}" in line
+            and f"dev {device}" in line
+            and "proto dhcp" not in line
+            and "proto kernel" not in line
+        ):
+            dest = line.split()[0]
+            _sudo(["ip", "route", "del", dest, "via", gateway, "dev", device], check=False)
+
+    # Revert tun0 DNS (harmless if the interface is already gone)
+    _sudo(["resolvectl", "revert", TUN_DEVICE], check=False)
+
+    result = _run(["ip", "route", "show", "default"])
+    log.info(
+        "Stale routes cleaned up (gw=%s dev=%s). Default: %s",
+        gateway, device, result.stdout.strip() or "(none)",
+    )
 
 
 def get_tunnel_ip(device: str = TUN_DEVICE) -> str:

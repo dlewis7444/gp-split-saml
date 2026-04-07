@@ -2,7 +2,6 @@
 
 import logging
 import os
-import signal
 import subprocess
 import time
 from importlib import resources
@@ -95,35 +94,56 @@ class VPNConnection:
         log.error("%s did not appear within %ds", TUN_DEVICE, timeout)
         return False
 
+    def _openconnect_pid(self) -> int | None:
+        """Find the openconnect child PID (child of the sudo wrapper process)."""
+        if self._proc is None:
+            return None
+        result = subprocess.run(
+            ["pgrep", "-P", str(self._proc.pid)],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            try:
+                return int(result.stdout.strip().split()[0])
+            except (ValueError, IndexError):
+                pass
+        return None
+
     def disconnect(self) -> None:
-        """Kill openconnect process."""
+        """Terminate openconnect and wait for its vpnc-script cleanup to finish."""
         if self._proc is None:
             return
 
-        pid = self._pid
-        log.info("Disconnecting VPN (PID %s)...", pid)
+        # Kill openconnect directly (not its sudo parent) so the process receives
+        # SIGTERM and runs its vpnc-script disconnect hook, which removes the
+        # split-exclude bypass routes it added.
+        oc_pid = self._openconnect_pid()
+        target = oc_pid or self._pid
+        log.info("Disconnecting VPN (openconnect PID %s)...", target)
 
         try:
-            subprocess.run(["sudo", "kill", str(pid)], check=False, timeout=5)
+            subprocess.run(["sudo", "kill", str(target)], check=False, timeout=5)
         except subprocess.TimeoutExpired:
             pass
 
-        # Wait for graceful exit
+        # Wait up to 10s — vpnc-script needs a moment to delete routes/DNS.
         try:
-            self._proc.wait(timeout=5)
+            self._proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            log.warning("openconnect didn't exit gracefully, sending SIGKILL")
+            log.warning("VPN did not exit gracefully, force-killing")
+            for pid in filter(None, [oc_pid, self._pid]):
+                try:
+                    subprocess.run(["sudo", "kill", "-9", str(pid)], check=False, timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
             try:
-                subprocess.run(
-                    ["sudo", "kill", "-9", str(pid)], check=False, timeout=5
-                )
                 self._proc.wait(timeout=3)
             except (subprocess.TimeoutExpired, OSError):
-                log.error("Failed to kill openconnect PID %s", pid)
+                log.error("Failed to kill VPN process")
 
         self._proc = None
         self._pid = None
-        log.info("VPN disconnected")
+        log.info("VPN process exited")
 
     def read_output_line(self) -> str | None:
         """Read a line from openconnect stdout (non-blocking)."""
