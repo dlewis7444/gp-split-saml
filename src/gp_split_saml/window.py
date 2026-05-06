@@ -293,13 +293,15 @@ class MainWindow(Gtk.ApplicationWindow):
         self._current_state = state
 
         state_label = self._status_rows["state"]
-        for cls in ("status-connected", "status-connecting", "status-disconnected", "status-error"):
+        for cls in ("status-connected", "status-connecting", "status-disconnecting",
+                    "status-disconnected", "status-error"):
             state_label.get_style_context().remove_class(cls)
         state_label.get_style_context().add_class(f"status-{state}")
 
         display = {
             "connected": "Connected",
             "connecting": "Connecting...",
+            "disconnecting": "Disconnecting...",
             "disconnected": "Disconnected",
             "error": "Error",
         }
@@ -315,6 +317,10 @@ class MainWindow(Gtk.ApplicationWindow):
         elif state == "connecting":
             self._connect_btn.set_label("CONNECTING...")
             self._connect_btn.get_style_context().add_class("connect-button")
+            self._connect_btn.set_sensitive(False)
+        elif state == "disconnecting":
+            self._connect_btn.set_label("DISCONNECTING...")
+            self._connect_btn.get_style_context().add_class("disconnect-button")
             self._connect_btn.set_sensitive(False)
         else:
             self._connect_btn.set_label("CONNECT")

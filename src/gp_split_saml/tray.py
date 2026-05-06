@@ -70,7 +70,7 @@ class TrayIcon:
         self._indicator.set_menu(menu)
 
     def set_state(self, state: str):
-        """Update tray icon: 'connected', 'disconnected', or 'connecting'."""
+        """Update tray icon: 'connected', 'disconnected', 'connecting', or 'disconnecting'."""
         if self._indicator is None:
             return
 
@@ -78,12 +78,17 @@ class TrayIcon:
             "connected": "network-vpn",
             "disconnected": "network-vpn-disconnected",
             "connecting": "network-vpn-acquiring",
+            "disconnecting": "network-vpn-acquiring",
         }
         self._indicator.set_icon_full(
             icons.get(state, "network-vpn-disconnected"), state
         )
 
         if self._connect_item and self._disconnect_item:
-            is_connected = state == "connected"
-            self._connect_item.set_sensitive(not is_connected)
-            self._disconnect_item.set_sensitive(is_connected)
+            if state in ("connecting", "disconnecting"):
+                self._connect_item.set_sensitive(False)
+                self._disconnect_item.set_sensitive(False)
+            else:
+                is_connected = state == "connected"
+                self._connect_item.set_sensitive(not is_connected)
+                self._disconnect_item.set_sensitive(is_connected)

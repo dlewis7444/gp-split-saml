@@ -322,7 +322,8 @@ class GPSplitSAMLApp(Gtk.Application):
 
         self._disconnecting = True
         self._stop_timers()
-        self._window.set_state("connecting")  # Show transitional state
+        self._window.set_state("disconnecting")
+        self._tray.set_state("disconnecting")
 
         thread = threading.Thread(target=self._disconnect_background, daemon=True)
         thread.start()
