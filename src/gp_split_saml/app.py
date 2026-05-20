@@ -3,6 +3,7 @@
 import json
 import logging
 import signal
+import socket
 import subprocess
 import threading
 import time
@@ -28,6 +29,33 @@ log = logging.getLogger("gp_split_saml")
 
 _STATE_FILE = Path.home() / ".local" / "share" / "gp-split-saml" / "vpn-state.json"
 
+# Tunnel liveness probe — TCP-connect to the VPN DNS server every 10s. A
+# completed handshake OR a RST (ConnectionRefused) both prove the tunnel
+# passes packets; only a timeout means the data path is dead. 3 consecutive
+# failures (~30s) triggers a silent auto-reconnect.
+_PROBE_PORT = 53
+_PROBE_TIMEOUT = 4
+_PROBE_FAIL_THRESHOLD = 3
+_SILENT_SAML_TIMEOUT = 30
+
+
+def _probe_tunnel(host: str) -> bool:
+    """End-to-end liveness probe via TCP to ``host:53``. Off-thread safe.
+
+    Returns True (alive) if the handshake completes or the peer sends RST,
+    False (dead) on timeout or unreachable. Empty host returns True so the
+    feature degrades when vpn_dns is unconfigured.
+    """
+    if not host:
+        return True
+    try:
+        with socket.create_connection((host, _PROBE_PORT), timeout=_PROBE_TIMEOUT):
+            return True
+    except ConnectionRefusedError:
+        return True
+    except (socket.timeout, OSError):
+        return False
+
 
 class GPSplitSAMLApp(Gtk.Application):
     """Main application orchestrator."""
@@ -47,6 +75,11 @@ class GPSplitSAMLApp(Gtk.Application):
         self._uptime_timer: int | None = None
         self._connect_time: float | None = None
         self._disconnecting = False
+        # Tunnel-probe / auto-reconnect state (all mutated on the GTK main thread).
+        self._probe_in_flight = False
+        self._probe_failures = 0
+        self._reconnect_pending = False
+        self._reconnecting = False
         self._ui_handler = UIHandler()
         self._logger = setup_logging(self._ui_handler)
 
@@ -195,8 +228,13 @@ class GPSplitSAMLApp(Gtk.Application):
     # Connect flow                                                         #
     # ------------------------------------------------------------------ #
 
-    def _do_connect(self):
-        """Start VPN connection — SAML on main thread, VPN in background."""
+    def _do_connect(self, silent: bool = False):
+        """Start VPN connection — SAML on main thread, VPN in background.
+
+        silent=True is used by the auto-reconnect path: SAML runs without a
+        visible window (succeeds only if the IdP session is still valid) and
+        notifications are suppressed except on failure.
+        """
         if self._vpn.is_running:
             return
 
@@ -205,11 +243,22 @@ class GPSplitSAMLApp(Gtk.Application):
 
         # SAML auth needs GTK main loop
         try:
-            log.info("Starting SAML authentication...")
-            result = perform_saml_auth(self._config.gateway, clientos="Windows")
+            log.info("Starting SAML authentication... (silent=%s)", silent)
+            result = perform_saml_auth(
+                self._config.gateway,
+                clientos="Windows",
+                silent=silent,
+                timeout=_SILENT_SAML_TIMEOUT if silent else None,
+            )
         except Exception as e:
             log.error("SAML auth failed: %s", e)
-            notify_error(f"SAML auth failed: {e}")
+            was_reconnect = self._reconnecting
+            self._reconnecting = False
+            self._reconnect_pending = False
+            if was_reconnect:
+                notify_error("VPN reconnect failed — click Reconnect")
+            else:
+                notify_error(f"SAML auth failed: {e}")
             self._window.set_state("error")
             self._tray.set_state("disconnected")
             return
@@ -278,7 +327,17 @@ class GPSplitSAMLApp(Gtk.Application):
 
     def _on_connected(self, tunnel_ip: str = ""):
         """Called on main thread after successful connection."""
-        log.info("VPN connected successfully")
+        was_reconnect = self._reconnecting
+        # Reconnect cycle (if any) completes successfully here.
+        self._reconnecting = False
+        self._reconnect_pending = False
+        self._probe_failures = 0
+        self._probe_in_flight = False
+
+        if was_reconnect:
+            log.info("VPN reconnected silently")
+        else:
+            log.info("VPN connected successfully")
         self._window.set_state(
             "connected",
             gateway=self._config.gateway,
@@ -286,7 +345,9 @@ class GPSplitSAMLApp(Gtk.Application):
             tunnel_ip=tunnel_ip,
         )
         self._tray.set_state("connected")
-        notify_connected(self._config.gateway)
+        # Silent reconnect: no popup — user asked for icon-only feedback.
+        if not was_reconnect:
+            notify_connected(self._config.gateway)
 
         # Start health monitor (10s interval)
         self._health_timer = GLib.timeout_add_seconds(10, self._health_check)
@@ -294,9 +355,15 @@ class GPSplitSAMLApp(Gtk.Application):
         self._uptime_timer = GLib.timeout_add_seconds(1, self._update_uptime)
 
     def _on_connect_error(self, error_msg: str):
+        was_reconnect = self._reconnecting
+        self._reconnecting = False
+        self._reconnect_pending = False
         self._window.set_state("error")
         self._tray.set_state("disconnected")
-        notify_error(error_msg)
+        if was_reconnect:
+            notify_error("VPN reconnect failed — click Reconnect")
+        else:
+            notify_error(error_msg)
         # Clean up partial connection
         if self._vpn.is_running:
             self._vpn.disconnect()
@@ -314,7 +381,16 @@ class GPSplitSAMLApp(Gtk.Application):
             self._uptime_timer = None
 
     def _do_disconnect(self):
-        """Disconnect VPN and restore network state."""
+        """Disconnect VPN and restore network state.
+
+        Called for both user-initiated disconnects and the teardown step of an
+        auto-reconnect cycle. The two are distinguished by ``_reconnect_pending``:
+        when False here, treat the click as user intent and cancel any queued
+        reconnect so a stale ``_resume_reconnect`` becomes a no-op.
+        """
+        if not self._reconnect_pending:
+            # User-initiated: override any in-flight reconnect cycle.
+            self._reconnecting = False
         if self._disconnecting:
             return
         if not self._vpn.is_running and self._vpn.pid is None:
@@ -347,20 +423,101 @@ class GPSplitSAMLApp(Gtk.Application):
         self._window.set_state("disconnected")
         self._tray.set_state("disconnected")
         self._connect_time = None
-        notify_disconnected()
+        # Mid-reconnect teardown is internal — don't fire a popup.
+        if not self._reconnect_pending:
+            notify_disconnected()
+
+        if self._reconnect_pending:
+            self._reconnect_pending = False
+            log.info("Teardown complete — resuming silent reconnect")
+            # Schedule on the next main-loop iteration so the nested SAML loop
+            # in _do_connect doesn't start inside this idle_add callback.
+            GLib.idle_add(self._resume_reconnect)
 
     # ------------------------------------------------------------------ #
     # Timers / health                                                      #
     # ------------------------------------------------------------------ #
 
     def _health_check(self) -> bool:
-        """Periodic check that openconnect is still running."""
+        """Periodic check: openconnect alive AND tunnel actually passes packets."""
+        # Belt-and-suspenders: the timer is removed by _stop_timers during a
+        # disconnect/reconnect, but a stale tick could land here in the gap.
+        if self._disconnecting or self._reconnecting:
+            return True
+
         if not self._vpn.is_running:
             log.warning("openconnect process died unexpectedly")
-            self._do_disconnect()
-            notify_error("VPN connection lost")
-            return False  # Stop timer
-        return True  # Continue
+            self._start_reconnect("openconnect process died")
+            # Stop this timer — _on_connected starts a fresh one on success.
+            return False
+
+        if self._probe_in_flight:
+            log.debug("Skipping probe tick — previous probe still running")
+            return True
+
+        self._probe_in_flight = True
+        host = self._config.vpn_dns if self._config else ""
+        threading.Thread(
+            target=self._probe_background, args=(host,), daemon=True,
+        ).start()
+        return True
+
+    def _probe_background(self, host: str) -> None:
+        """Background thread — runs the socket probe, delivers verdict to main."""
+        try:
+            alive = _probe_tunnel(host)
+        except Exception as e:
+            # _probe_tunnel already catches the expected failures; anything
+            # else is a programming error — treat conservatively as ALIVE so
+            # a bug here cannot trigger a false teardown.
+            log.error("Probe raised unexpectedly (treating as alive): %s", e)
+            alive = True
+        GLib.idle_add(self._on_probe_result, alive)
+
+    def _on_probe_result(self, alive: bool) -> bool:
+        """Main thread — interpret the probe verdict."""
+        self._probe_in_flight = False
+
+        # Drop stale verdicts: world may have changed during the 4s probe.
+        if self._disconnecting or self._reconnecting or not self._vpn.is_running:
+            return False
+
+        if alive:
+            if self._probe_failures:
+                log.info("Tunnel probe recovered after %d failure(s)", self._probe_failures)
+            self._probe_failures = 0
+            return False
+
+        self._probe_failures += 1
+        log.warning(
+            "Tunnel liveness probe failed (%d/%d)",
+            self._probe_failures, _PROBE_FAIL_THRESHOLD,
+        )
+        if self._probe_failures >= _PROBE_FAIL_THRESHOLD:
+            self._start_reconnect("tunnel unresponsive")
+        return False  # one-shot idle_add
+
+    def _start_reconnect(self, reason: str) -> None:
+        """Main-thread entry point for an auto-reconnect cycle (silent)."""
+        if self._reconnecting:
+            return  # already underway
+        if self._disconnecting:
+            return  # user disconnect wins
+        log.warning("Auto-reconnect triggered: %s", reason)
+        self._reconnecting = True
+        self._probe_failures = 0
+        self._reconnect_pending = True
+        # Per the user's spec: tray icon reflects the state, no popup yet.
+        self._do_disconnect()
+
+    def _resume_reconnect(self) -> bool:
+        """Main thread — called via idle_add after teardown completes."""
+        if not self._reconnecting:
+            # User cancelled during teardown; abandon the reconnect.
+            log.info("Reconnect cancelled before resume")
+            return False
+        self._do_connect(silent=True)
+        return False  # one-shot
 
     def _update_uptime(self) -> bool:
         if self._connect_time is None:

@@ -146,9 +146,18 @@ class SAMLPrelogin:
 class SAMLLoginWindow:
     """WebKit2 browser window for interactive SAML login."""
 
-    def __init__(self, uri: str | None, html: str | None):
+    def __init__(
+        self,
+        uri: str | None,
+        html: str | None,
+        silent: bool = False,
+        timeout: int | None = None,
+    ):
         self.closed = False
         self.success = False
+        self.silent = silent
+        self.timeout = timeout
+        self._timeout_id: int | None = None
         self.saml_result: dict[str, str] = {}
         self._result: SAMLResult | None = None
 
@@ -164,7 +173,10 @@ class SAMLLoginWindow:
         self.window.set_title("SAML Login")
         self.window.set_default_size(500, 660)
         self.window.add(self.wview)
-        self.window.show_all()
+        # In silent mode the window is never mapped — WebKit still processes
+        # redirects, so persisted IdP cookies can complete auth invisibly.
+        if not silent:
+            self.window.show_all()
 
         self.window.connect("delete-event", self._on_close)
         self.wview.connect("load-changed", self._on_load_changed)
@@ -175,10 +187,26 @@ class SAMLLoginWindow:
             self.wview.load_uri(uri)
 
     def run(self) -> SAMLResult | None:
-        """Run nested main loop, return result or None if cancelled."""
+        """Run nested main loop, return result or None if cancelled/timed out."""
         self._loop = GLib.MainLoop()
+        if self.timeout:
+            self._timeout_id = GLib.timeout_add_seconds(self.timeout, self._on_timeout)
         self._loop.run()
+        self._cancel_timeout()
         return self._result
+
+    def _on_timeout(self) -> bool:
+        log.warning("SAML auth timed out after %ds (silent=%s)", self.timeout, self.silent)
+        self._timeout_id = None
+        self.closed = True
+        self.window.close()
+        self._loop.quit()
+        return False
+
+    def _cancel_timeout(self) -> None:
+        if self._timeout_id is not None:
+            GLib.source_remove(self._timeout_id)
+            self._timeout_id = None
 
     def _on_close(self, window, event):
         self.closed = True
@@ -277,20 +305,35 @@ class SAMLLoginWindow:
         return False
 
 
-def perform_saml_auth(gateway: str, clientos: str = "Windows") -> SAMLResult:
-    """Full SAML auth flow: prelogin + interactive browser login.
+def perform_saml_auth(
+    gateway: str,
+    clientos: str = "Windows",
+    silent: bool = False,
+    timeout: int | None = None,
+) -> SAMLResult:
+    """Full SAML auth flow: prelogin + browser login.
 
     Must be called from the GTK main thread.
+
+    silent=True keeps the WebKit window hidden — useful for re-auth when the
+    IdP session is still valid (the redirect chain completes via persisted
+    cookies). Defaults to a 30-second timeout in silent mode so it can't hang
+    when interaction would actually be required.
     """
+    if silent and timeout is None:
+        timeout = 30
+
     prelogin = SAMLPrelogin(gateway, clientos)
     method, uri, html = prelogin.execute()
-    log.info("SAML method: %s", method)
+    log.info("SAML method: %s (silent=%s)", method, silent)
 
-    login_window = SAMLLoginWindow(uri, html)
+    login_window = SAMLLoginWindow(uri, html, silent=silent, timeout=timeout)
     result = login_window.run()
 
     if result is None:
         if login_window.closed:
+            if silent:
+                raise RuntimeError("Silent SAML auth timed out (IdP session likely expired)")
             raise RuntimeError("Login window closed by user")
         raise RuntimeError("SAML login failed — no credentials received")
 
